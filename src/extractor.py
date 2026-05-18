@@ -31,11 +31,14 @@ async def fetch_raw_episodes(anilist_id: int) -> dict:
         last_status = None
         for pipe_target, headers in iter_miruro_pipe_targets(encoded_req):
             print(f"\n[KUHI API] executing pipe for raw episodes:", pipe_target)
-            res = await client.get(pipe_target, headers=headers)
-            last_status = res.status_code
-            if res.status_code == 200:
-                data = decode_pipe_response(res.text.strip())
-                deep_translate(data)
-                return data
+            try:
+                res = await client.get(pipe_target, headers=headers)
+                last_status = res.status_code
+                if res.status_code == 200:
+                    data = decode_pipe_response(res.text.strip())
+                    deep_translate(data)
+                    return data
+            except Exception as e:
+                print(f"[KUHI API] Failed to connect to {pipe_target}: {e}")
 
         raise HTTPException(status_code=last_status or 502, detail="pipe request failed")

@@ -482,10 +482,13 @@ async def get_sources(
         last_status = None
         for pipe_target, headers in iter_miruro_pipe_targets(encoded_req):
             print(f"\n[KUHI API] extracting stream sources pipe targeting:", pipe_target)
-            res = await client.get(pipe_target, headers=headers)
-            last_status = res.status_code
-            if res.status_code == 200:
-                return proxy_deep_images(decode_pipe_response(res.text.strip()))
+            try:
+                res = await client.get(pipe_target, headers=headers)
+                last_status = res.status_code
+                if res.status_code == 200:
+                    return proxy_deep_images(decode_pipe_response(res.text.strip()))
+            except Exception as e:
+                print(f"[KUHI API] Failed to connect to {pipe_target}: {e}")
 
         raise HTTPException(status_code=last_status or 502, detail="fetching pipe failed real bad")
 
@@ -612,15 +615,18 @@ async def extract_simple(query: str, episode: int = Query(1, alias="e")):
             async with httpx.AsyncClient(timeout=15.0) as client:
                 for pipe_target, headers in iter_miruro_pipe_targets(encoded_req):
                     print(f"\n[KUHI API] trying provider {try_provider}: {pipe_target}")
-                    res = await client.get(pipe_target, headers=headers)
+                    try:
+                        res = await client.get(pipe_target, headers=headers)
 
-                    if res.status_code == 200:
-                        result = decode_pipe_response(res.text.strip())
-                        print(f"[KUHI API] success with provider {try_provider}")
-                        return proxy_deep_images(result)
+                        if res.status_code == 200:
+                            result = decode_pipe_response(res.text.strip())
+                            print(f"[KUHI API] success with provider {try_provider}")
+                            return proxy_deep_images(result)
 
-                    last_error = f"{try_provider} failed: {res.status_code}"
-                    print(f"[KUHI API] {last_error}")
+                        last_error = f"{try_provider} failed: {res.status_code}"
+                        print(f"[KUHI API] {last_error}")
+                    except Exception as e:
+                        print(f"[KUHI API] Failed to connect to {pipe_target}: {e}")
         except Exception as e:
             last_error = f"{try_provider} error: {str(e)}"
             print(f"[KUHI API] {last_error}")
