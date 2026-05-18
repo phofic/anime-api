@@ -1,6 +1,8 @@
 # Kuhi API v2.0
 
-> ** DISCLAIMER:** This API is experimental and not reliable. Use at your own risk. No guarantees on uptime or data accuracy. I'M NOT RESPONSIBLE FOR ANY UNETHICAL USAGES OR LEGAL TROUBLES, ONLY FOR EDUCATION PURPOSE.
+> DISCLAIMER: This API is experimental and not reliable. Use at your own risk. No guarantees on uptime or data accuracy. I'M NOT RESPONSIBLE FOR ANY UNETHICAL USAGES OR LEGAL TROUBLES, ONLY FOR EDUCATION PURPOSE.
+
+Current Status: 18/05/2026 (working)
 
 A anime streaming API built for scale. Kuhi provides a clean REST interface to search, filter, and stream anime content with automatic source extraction and proxy capabilities.
 
