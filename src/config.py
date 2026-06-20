@@ -12,8 +12,10 @@ ANILIST_URL = "https://graphql.anilist.co"
 
 # miruro base urls (ordered by preference)
 MIRURO_BASE_URLS = [
-    "https://www.miruro.online",
+    "https://www.miruro.to",
     "https://www.miruro.bz",
+    "https://www.miruro.ru",
+    "https://www.miruro.tv",
 ]
 
 # backend pipe path of miruro
