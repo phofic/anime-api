@@ -493,7 +493,11 @@ async def get_sources(
         raise HTTPException(status_code=last_status or 502, detail="fetching pipe failed real bad")
 
 @router.get("/extract/{query}")
-async def extract_simple(query: str, episode: int = Query(1, alias="e")):
+async def extract_simple(
+    query: str, 
+    episode: int = Query(1, alias="e"),
+    type: str = Query("sub", description="Audio type selection: sub or dub") # 🟢 Added language parameter
+):
     # simplified extraction with auto-search: /anime/extract/21?e=1 or /anime/extract/violet-evergarden?e=1
     # handles both anilist IDs and search queries
     
@@ -554,11 +558,19 @@ async def extract_simple(query: str, episode: int = Query(1, alias="e")):
     
     ranking = ["zoro", "bee", "telli", "arc", "yugen", "jet", "neo", "kiwi"]
     
+    # 🟢 Set dynamic search priorities based on the incoming query type
+    if type.lower() == "dub":
+        category_order = ["dub", "sub", "raw"]  # Check DUB tracks first
+    else:
+        category_order = ["sub", "dub", "raw"]  # Check SUB tracks first
+    
     for prov in ranking:
         if prov in providers:
             prov_data = providers[prov]
             eps = prov_data.get("episodes", {})
-            for cat in ["sub", "dub", "raw"]:
+            
+            # 🟢 Replaced hardcoded array with our dynamic category_order variable
+            for cat in category_order:
                 if cat in eps:
                     cat_eps = eps[cat]
                     if isinstance(cat_eps, list):
@@ -585,7 +597,9 @@ async def extract_simple(query: str, episode: int = Query(1, alias="e")):
         if prov != target_provider and prov in providers:
             prov_data = providers[prov]
             eps = prov_data.get("episodes", {})
-            for cat in ["sub", "dub", "raw"]:
+            
+            # 🟢 Replaced hardcoded fallback array with our dynamic category_order variable
+            for cat in category_order:
                 if cat in eps:
                     cat_eps = eps[cat]
                     if isinstance(cat_eps, list):
@@ -633,4 +647,5 @@ async def extract_simple(query: str, episode: int = Query(1, alias="e")):
             continue
     
     raise HTTPException(status_code=500, detail=f"all providers failed. last error: {last_error}")
+
 
