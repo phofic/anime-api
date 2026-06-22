@@ -504,6 +504,7 @@ async def extract_simple(
     # Check if query is numeric (anilist ID) or text (search query)
     if query.isdigit():
         anilist_id = int(query)
+        # Fetch format to check if movie
         gql = """
         query ($id: Int) {
             Media(id: $id, type: ANIME) {
@@ -517,9 +518,11 @@ async def extract_simple(
         if not media:
             raise HTTPException(status_code=404, detail="anime not found")
         
+        # If it's a movie, force episode to 1
         if media.get("format") == "MOVIE":
             episode = 1
     else:
+        # Search for anime and get first result
         gql = f"""
         query ($search: String) {{
             Page(page: 1, perPage: 1) {{
@@ -538,6 +541,7 @@ async def extract_simple(
         anilist_id = media_list[0]["id"]
         media_format = media_list[0].get("format")
         
+        # If it's a movie, force episode to 1
         if media_format == "MOVIE":
             episode = 1
     
@@ -550,6 +554,7 @@ async def extract_simple(
     ranking = ["zoro", "bee", "telli", "arc", "yugen", "jet", "neo", "kiwi"]
     requested_type = type.lower().strip()
     
+    # Dynamic prioritization structure
     if requested_type == "dub":
         category_order = ["dub", "sub", "raw"]
     else:
@@ -559,7 +564,7 @@ async def extract_simple(
     target_provider = None
     target_cat = None
     
-    # 🟢 PASS 1: Prioritize the exact requested audio type across ALL providers first
+    # 🟢 PASS 1: Target the requested audio type across ALL providers first to avoid soft-matching sub files on dub calls
     for prov in ranking:
         if prov in providers:
             eps = providers[prov].get("episodes", {})
@@ -573,7 +578,7 @@ async def extract_simple(
         if target_episode_id:
             break
 
-    # 🟢 PASS 2: If primary audio type isn't anywhere, fall back to alternative categories
+    # 🟢 PASS 2: If primary audio type isn't hosted anywhere, gracefully grab alternative categories
     if not target_episode_id:
         for prov in ranking:
             if prov in providers:
@@ -594,11 +599,11 @@ async def extract_simple(
     if not target_episode_id:
         raise HTTPException(status_code=404, detail=f"episode {episode} not found in any provider")
         
-    # Build unique pipeline fallback targets list
+    # Initialize unified fallback list and deduplication cache tracker
     providers_to_try = [(target_provider, target_cat, target_episode_id)]
-    seen_targets = { (target_provider, target_cat, target_episode_id) }
+    seen_targets = {(target_provider, target_cat, target_episode_id)}
     
-    # 🟢 STEP 3: Prioritize fallbacks that match the preferred requested category
+    # 🟢 PASS 3: Clean up and gather unique backup provider combinations matching preference tracking
     for cat in category_order:
         for prov in ranking:
             if prov in providers:
@@ -612,7 +617,7 @@ async def extract_simple(
                                 seen_targets.add(track_tuple)
                                 break
 
-    # Try each provider configuration dynamically until a manifest successfully processes
+    # Try each provider configuration sequence until a source successfully yields 200 OK
     last_error = None
     for try_provider, try_cat, try_ep_id in providers_to_try:
         try:
@@ -623,7 +628,7 @@ async def extract_simple(
                 "query": {
                     "episodeId": enc_id,
                     "provider": try_provider,
-                    "category": try_cat.lower(),
+                    "category": try_cat.lower(),  # Safe lowercase conversion
                     "anilistId": anilist_id,
                 },
                 "body": None,
