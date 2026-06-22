@@ -28,6 +28,8 @@ if os.path.exists("assets"):
 app.include_router(router, prefix="/anime")
 
 # 🟢 NATIVE ROOT PROXIES: Placed at the root app level to completely eliminate Vercel 404 router failures
+# Replace your /proxy_m3u8 and /proxy_segment endpoints in src/main.py with this:
+
 @app.get("/proxy_m3u8")
 async def proxy_m3u8(
     url: str = Query(..., description="The raw master.m3u8 URL path target"),
@@ -45,57 +47,41 @@ async def proxy_m3u8(
     try:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
             res = await client.get(url, headers=spoof_headers)
-            
             if res.status_code != 200:
-                raise HTTPException(status_code=res.status_code, detail="Failed fetching playlist target from provider.")
+                raise HTTPException(status_code=res.status_code, detail="Failed fetching playlist target.")
             
             raw_manifest_lines = res.text.splitlines()
             rewritten_manifest_lines = []
-            
-            # Extract parent directory boundary to correctly merge internal sub-playlists
             base_url = url.rsplit('/', 1)[0] + '/'
 
             for line in raw_manifest_lines:
                 clean_line = line.strip()
-                
                 if clean_line and not clean_line.startswith("#"):
-                    # Handle relative vs absolute link mapping structures cleanly
-                    if not clean_line.startswith("http"):
-                        absolute_track_url = urljoin(base_url, clean_line)
-                    else:
-                        absolute_track_url = clean_line
+                    absolute_track_url = urljoin(base_url, clean_line) if not clean_line.startswith("http") else clean_line
+                    query_params = {"url": absolute_track_url, "referer": referer}
                     
-                    query_params = {
-                        "url": absolute_track_url,
-                        "referer": referer
-                    }
-                    
-                    # 🟢 Dynamically points back to root paths to remove sub-routing bugs
+                    # 🟢 FORCE ALL CHILD PATHS (keys, segments, playlists) THROUGH THE PROXY
                     if '.m3u8' in clean_line:
                         proxied_track_line = f"/proxy_m3u8?{urlencode(query_params)}"
                     else:
                         proxied_track_line = f"/proxy_segment?{urlencode(query_params)}"
-                        
                     rewritten_manifest_lines.append(proxied_track_line)
                 else:
                     rewritten_manifest_lines.append(line)
 
-            final_playlist_body = "\n".join(rewritten_manifest_lines)
-            
             return Response(
-                content=final_playlist_body,
+                content="\n".join(rewritten_manifest_lines),
                 media_type="application/vnd.apple.mpegurl",
                 status_code=200,
                 headers={
                     "Access-Control-Allow-Origin": "*",
                     "Access-Control-Allow-Methods": "GET, OPTIONS",
                     "Access-Control-Allow-Headers": "*",
-                    "Cache-Control": "no-store, no-cache, must-revalidate"
+                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" # 🟢 KILL VERCEL CACHE
                 }
             )
-            
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"HLS proxy manifest rewrite crash: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/proxy_segment")
@@ -116,19 +102,26 @@ async def proxy_segment(
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             resp = await client.get(url, headers=spoof_headers)
             
+            # 🟢 DYNAMIC MEDIA TYPE DETECTOR (Fixes .jpg / mon.key decryption hangs)
+            content_type = "video/mp2t"
+            if ".key" in url or "mon.key" in url:
+                content_type = "application/octet-stream"
+            elif url.endswith(".jpg"):
+                content_type = "image/jpeg"
+
             return Response(
                 content=resp.content, 
-                media_type="video/mp2t",
+                media_type=content_type,
                 status_code=200,
                 headers={
                     "Access-Control-Allow-Origin": "*",
                     "Access-Control-Allow-Methods": "GET, OPTIONS",
                     "Access-Control-Allow-Headers": "*",
-                    "Cache-Control": "public, max-age=3600"
+                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" # 🟢 KILL VERCEL CACHE
                 }
             )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Proxy failed to fetch segment source: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/", response_class=HTMLResponse)
