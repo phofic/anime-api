@@ -496,15 +496,14 @@ async def get_sources(
 async def extract_simple(
     query: str, 
     episode: int = Query(1, alias="e"),
-    type: str = Query("sub", description="Audio type selection: sub or dub") # 🟢 Added language parameter
+    type: str = Query("sub", description="Audio type selection: sub or dub")
 ):
-    # simplified extraction with auto-search: /anime/extract/21?e=1 or /anime/extract/violet-evergarden?e=1
-    # handles both anilist IDs and search queries
+    # Simplified extraction with auto-search: /anime/extract/21?e=1 or /anime/extract/violet-evergarden?e=1
+    # Handles both anilist IDs and search queries
     
-    # check if query is numeric (anilist ID) or text (search query)
+    # Check if query is numeric (anilist ID) or text (search query)
     if query.isdigit():
         anilist_id = int(query)
-        # fetch format to check if movie
         gql = """
         query ($id: Int) {
             Media(id: $id, type: ANIME) {
@@ -518,11 +517,9 @@ async def extract_simple(
         if not media:
             raise HTTPException(status_code=404, detail="anime not found")
         
-        # if it's a movie, force episode to 1
         if media.get("format") == "MOVIE":
             episode = 1
     else:
-        # search for anime and get first result
         gql = f"""
         query ($search: String) {{
             Page(page: 1, perPage: 1) {{
@@ -541,7 +538,6 @@ async def extract_simple(
         anilist_id = media_list[0]["id"]
         media_format = media_list[0].get("format")
         
-        # if it's a movie, force episode to 1
         if media_format == "MOVIE":
             episode = 1
     
@@ -551,64 +547,73 @@ async def extract_simple(
     if not providers:
         raise HTTPException(status_code=404, detail="no providers available for this anime")
     
-    # smart resolve best provider source
+    ranking = ["zoro", "bee", "telli", "arc", "yugen", "jet", "neo", "kiwi"]
+    requested_type = type.lower().strip()
+    
+    if requested_type == "dub":
+        category_order = ["dub", "sub", "raw"]
+    else:
+        category_order = ["sub", "dub", "raw"]
+        
     target_episode_id = None
     target_provider = None
     target_cat = None
     
-    ranking = ["zoro", "bee", "telli", "arc", "yugen", "jet", "neo", "kiwi"]
-    
-    # 🟢 Set dynamic search priorities based on the incoming query type
-    if type.lower() == "dub":
-        category_order = ["dub", "sub", "raw"]  # Check DUB tracks first
-    else:
-        category_order = ["sub", "dub", "raw"]  # Check SUB tracks first
-    
+    # 🟢 PASS 1: Prioritize the exact requested audio type across ALL providers first
     for prov in ranking:
         if prov in providers:
-            prov_data = providers[prov]
-            eps = prov_data.get("episodes", {})
-            
-            # 🟢 Replaced hardcoded array with our dynamic category_order variable
-            for cat in category_order:
-                if cat in eps:
-                    cat_eps = eps[cat]
-                    if isinstance(cat_eps, list):
-                        for ep in cat_eps:
+            eps = providers[prov].get("episodes", {})
+            if requested_type in eps and isinstance(eps[requested_type], list):
+                for ep in eps[requested_type]:
+                    if ep.get("number") == episode:
+                        target_episode_id = ep.get("id")
+                        target_provider = prov
+                        target_cat = requested_type
+                        break
+        if target_episode_id:
+            break
+
+    # 🟢 PASS 2: If primary audio type isn't anywhere, fall back to alternative categories
+    if not target_episode_id:
+        for prov in ranking:
+            if prov in providers:
+                eps = providers[prov].get("episodes", {})
+                for cat in category_order:
+                    if cat != requested_type and cat in eps and isinstance(eps[cat], list):
+                        for ep in eps[cat]:
                             if ep.get("number") == episode:
                                 target_episode_id = ep.get("id")
                                 target_provider = prov
                                 target_cat = cat
                                 break
-                if target_episode_id:
-                    break
-        if target_episode_id:
-            break
-            
+                    if target_episode_id:
+                        break
+            if target_episode_id:
+                break
+                
     if not target_episode_id:
         raise HTTPException(status_code=404, detail=f"episode {episode} not found in any provider")
         
-    # try multiple providers if one fails
-    last_error = None
+    # Build unique pipeline fallback targets list
     providers_to_try = [(target_provider, target_cat, target_episode_id)]
+    seen_targets = { (target_provider, target_cat, target_episode_id) }
     
-    # add fallback providers
-    for prov in ranking:
-        if prov != target_provider and prov in providers:
-            prov_data = providers[prov]
-            eps = prov_data.get("episodes", {})
-            
-            # 🟢 Replaced hardcoded fallback array with our dynamic category_order variable
-            for cat in category_order:
-                if cat in eps:
-                    cat_eps = eps[cat]
-                    if isinstance(cat_eps, list):
-                        for ep in cat_eps:
-                            if ep.get("number") == episode:
-                                providers_to_try.append((prov, cat, ep.get("id")))
+    # 🟢 STEP 3: Prioritize fallbacks that match the preferred requested category
+    for cat in category_order:
+        for prov in ranking:
+            if prov in providers:
+                eps = providers[prov].get("episodes", {})
+                if cat in eps and isinstance(eps[cat], list):
+                    for ep in eps[cat]:
+                        if ep.get("number") == episode:
+                            track_tuple = (prov, cat, ep.get("id"))
+                            if track_tuple not in seen_targets:
+                                providers_to_try.append(track_tuple)
+                                seen_targets.add(track_tuple)
                                 break
-    
-    # try each provider until one works
+
+    # Try each provider configuration dynamically until a manifest successfully processes
+    last_error = None
     for try_provider, try_cat, try_ep_id in providers_to_try:
         try:
             enc_id = base64.urlsafe_b64encode(try_ep_id.encode()).decode().rstrip('=')
@@ -618,7 +623,7 @@ async def extract_simple(
                 "query": {
                     "episodeId": enc_id,
                     "provider": try_provider,
-                    "category": try_cat,
+                    "category": try_cat.lower(),
                     "anilistId": anilist_id,
                 },
                 "body": None,
@@ -628,16 +633,16 @@ async def extract_simple(
             
             async with httpx.AsyncClient(timeout=15.0) as client:
                 for pipe_target, headers in iter_miruro_pipe_targets(encoded_req):
-                    print(f"\n[KUHI API] trying provider {try_provider}: {pipe_target}")
+                    print(f"\n[KUHI API] trying provider {try_provider} ({try_cat}): {pipe_target}")
                     try:
                         res = await client.get(pipe_target, headers=headers)
 
                         if res.status_code == 200:
                             result = decode_pipe_response(res.text.strip())
-                            print(f"[KUHI API] success with provider {try_provider}")
+                            print(f"[KUHI API] success with provider {try_provider} ({try_cat})")
                             return proxy_deep_images(result)
 
-                        last_error = f"{try_provider} failed: {res.status_code}"
+                        last_error = f"{try_provider} ({try_cat}) failed: {res.status_code}"
                         print(f"[KUHI API] {last_error}")
                     except Exception as e:
                         print(f"[KUHI API] Failed to connect to {pipe_target}: {e}")
@@ -647,5 +652,3 @@ async def extract_simple(
             continue
     
     raise HTTPException(status_code=500, detail=f"all providers failed. last error: {last_error}")
-
-
