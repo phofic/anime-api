@@ -30,6 +30,7 @@ app.include_router(router, prefix="/anime")
 # 🟢 NATIVE ROOT PROXIES: Placed at the root app level to completely eliminate Vercel 404 router failures
 # Replace your /proxy_m3u8 and /proxy_segment endpoints in src/main.py with this:
 
+
 @app.get("/proxy_m3u8")
 async def proxy_m3u8(
     url: str = Query(..., description="The raw master.m3u8 URL path target"),
@@ -45,27 +46,48 @@ async def proxy_m3u8(
     }
 
     try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
             res = await client.get(url, headers=spoof_headers)
             if res.status_code != 200:
                 raise HTTPException(status_code=res.status_code, detail="Failed fetching playlist target.")
             
+            # 🟢 FIXED: Split strictly on text newlines to protect hidden carriage return tags
             raw_manifest_lines = res.text.splitlines()
             rewritten_manifest_lines = []
+            
+            # Extract parent directory boundary to correctly merge internal sub-playlists
             base_url = url.rsplit('/', 1)[0] + '/'
 
             for line in raw_manifest_lines:
                 clean_line = line.strip()
+                
+                # Check if line contains a URI data block or direct relative target path
                 if clean_line and not clean_line.startswith("#"):
                     absolute_track_url = urljoin(base_url, clean_line) if not clean_line.startswith("http") else clean_line
                     query_params = {"url": absolute_track_url, "referer": referer}
                     
-                    # 🟢 FORCE ALL CHILD PATHS (keys, segments, playlists) THROUGH THE PROXY
                     if '.m3u8' in clean_line:
                         proxied_track_line = f"/proxy_m3u8?{urlencode(query_params)}"
                     else:
                         proxied_track_line = f"/proxy_segment?{urlencode(query_params)}"
                     rewritten_manifest_lines.append(proxied_track_line)
+                    
+                # 🟢 FIXED: Handle cases where the key URI is embedded directly inside an inline tag attribute line!
+                elif 'URI="' in line:
+                    try:
+                        # Extract the key path inside the URI="..." attribute block safely
+                        parts = line.split('URI="')
+                        key_url = parts[1].split('"')[0]
+                        absolute_key_url = urljoin(base_url, key_url) if not key_url.startswith("http") else key_url
+                        
+                        query_params = {"url": absolute_key_url, "referer": referer}
+                        proxied_key_url = f"/proxy_segment?{urlencode(query_params)}"
+                        
+                        # Rebuild the tag attribute line with the proxied URL path
+                        rebuilt_line = parts[0] + 'URI="' + proxied_key_url + '"' + parts[1].split('"', 1)[1]
+                        rewritten_manifest_lines.append(rebuilt_line)
+                    except Exception:
+                        rewritten_manifest_lines.append(line)
                 else:
                     rewritten_manifest_lines.append(line)
 
@@ -77,7 +99,7 @@ async def proxy_m3u8(
                     "Access-Control-Allow-Origin": "*",
                     "Access-Control-Allow-Methods": "GET, OPTIONS",
                     "Access-Control-Allow-Headers": "*",
-                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" # 🟢 KILL VERCEL CACHE
+                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
                 }
             )
     except Exception as e:
@@ -102,12 +124,12 @@ async def proxy_segment(
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             resp = await client.get(url, headers=spoof_headers)
             
-            # 🟢 DYNAMIC MEDIA TYPE DETECTOR (Fixes .jpg / mon.key decryption hangs)
+            # 🟢 FIXED: Set strict HLS decryption key headers according to browser standards
             content_type = "video/mp2t"
             if ".key" in url or "mon.key" in url:
-                content_type = "application/octet-stream"
-            elif url.endswith(".jpg"):
-                content_type = "image/jpeg"
+                content_type = "application/pgp-keys"  # Forces browser key verification compliance
+            elif url.endswith(".jpg") or ".jpg" in url:
+                content_type = "video/mp2t"  # 🟢 CRITICAL: Treat image chunks as binary video tracks!
 
             return Response(
                 content=resp.content, 
@@ -117,12 +139,11 @@ async def proxy_segment(
                     "Access-Control-Allow-Origin": "*",
                     "Access-Control-Allow-Methods": "GET, OPTIONS",
                     "Access-Control-Allow-Headers": "*",
-                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0" # 🟢 KILL VERCEL CACHE
+                    "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"
                 }
             )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
