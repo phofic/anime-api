@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Query, HTTPException, Response
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -6,11 +6,12 @@ from src.endpoints import router
 from src.config import HEADERS
 import httpx
 import os
+from urllib.parse import urljoin, urlencode
 
-# main Kuhi api initialization
+# Main Kuhi API initialization
 app = FastAPI(title="Kuhi API", version="2.0")
 
-# enable CORS for video streaming
+# Enable wide CORS parameters to ensure cross-origin player decodes do not fail
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,15 +20,115 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# mount static files for assets
+# Mount static files for assets safely
 if os.path.exists("assets"):
     app.mount("/assets", StaticFiles(directory="assets"), name="assets")
 
-# include routes under the /anime prefix for modular future scaling (ex: /movies)
+# Include modular routes under the /anime prefix module layout
 app.include_router(router, prefix="/anime")
 
-from fastapi import Query
-from fastapi.responses import Response
+# 🟢 NATIVE ROOT PROXIES: Placed at the root app level to completely eliminate Vercel 404 router failures
+@app.get("/proxy_m3u8")
+async def proxy_m3u8(
+    url: str = Query(..., description="The raw master.m3u8 URL path target"),
+    referer: str = Query(..., description="The matching validation referer token tracking link")
+):
+    clean_origin = referer.rstrip('/')
+    spoof_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": referer,
+        "Origin": clean_origin,
+        "Accept": "*/*",
+        "Cache-Control": "no-cache"
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            res = await client.get(url, headers=spoof_headers)
+            
+            if res.status_code != 200:
+                raise HTTPException(status_code=res.status_code, detail="Failed fetching playlist target from provider.")
+            
+            raw_manifest_lines = res.text.splitlines()
+            rewritten_manifest_lines = []
+            
+            # Extract parent directory boundary to correctly merge internal sub-playlists
+            base_url = url.rsplit('/', 1)[0] + '/'
+
+            for line in raw_manifest_lines:
+                clean_line = line.strip()
+                
+                if clean_line and not clean_line.startswith("#"):
+                    # Handle relative vs absolute link mapping structures cleanly
+                    if not clean_line.startswith("http"):
+                        absolute_track_url = urljoin(base_url, clean_line)
+                    else:
+                        absolute_track_url = clean_line
+                    
+                    query_params = {
+                        "url": absolute_track_url,
+                        "referer": referer
+                    }
+                    
+                    # 🟢 Dynamically points back to root paths to remove sub-routing bugs
+                    if '.m3u8' in clean_line:
+                        proxied_track_line = f"/proxy_m3u8?{urlencode(query_params)}"
+                    else:
+                        proxied_track_line = f"/proxy_segment?{urlencode(query_params)}"
+                        
+                    rewritten_manifest_lines.append(proxied_track_line)
+                else:
+                    rewritten_manifest_lines.append(line)
+
+            final_playlist_body = "\n".join(rewritten_manifest_lines)
+            
+            return Response(
+                content=final_playlist_body,
+                media_type="application/vnd.apple.mpegurl",
+                status_code=200,
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "GET, OPTIONS",
+                    "Access-Control-Allow-Headers": "*",
+                    "Cache-Control": "no-store, no-cache, must-revalidate"
+                }
+            )
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"HLS proxy manifest rewrite crash: {str(e)}")
+
+
+@app.get("/proxy_segment")
+async def proxy_segment(
+    url: str = Query(..., description="The raw segment URL file target"),
+    referer: str = Query(..., description="The required stream origin referer token")
+):
+    clean_origin = referer.rstrip('/')
+    spoof_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": referer,
+        "Origin": clean_origin,
+        "Accept": "*/*",
+        "Cache-Control": "no-cache"
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            resp = await client.get(url, headers=spoof_headers)
+            
+            return Response(
+                content=resp.content, 
+                media_type="video/mp2t",
+                status_code=200,
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "GET, OPTIONS",
+                    "Access-Control-Allow-Headers": "*",
+                    "Cache-Control": "public, max-age=3600"
+                }
+            )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Proxy failed to fetch segment source: {str(e)}")
 
 
 @app.get("/", response_class=HTMLResponse)
