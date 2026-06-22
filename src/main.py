@@ -29,47 +29,6 @@ app.include_router(router, prefix="/anime")
 from fastapi import Query
 from fastapi.responses import Response
 
-@app.get("/proxy_m3u8")
-async def proxy_m3u8(url: str, referer: str):
-    # acts as a simple header injector to bypass cdn referer checks
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        h = HEADERS.copy()
-        h["Referer"] = referer
-        resp = await client.get(url, headers=h)
-        
-        # rewrite ALL URLs in playlist to go through proxy
-        content = resp.text
-        base_url = url.rsplit('/', 1)[0] + '/'
-        lines = []
-        from urllib.parse import quote
-        for line in content.split('\n'):
-            stripped = line.strip()
-            if stripped and not stripped.startswith('#'):
-                # handle both relative and absolute URLs
-                if stripped.startswith('http'):
-                    absolute_url = stripped
-                elif not stripped.startswith('/'):
-                    absolute_url = base_url + stripped
-                else:
-                    absolute_url = stripped
-                
-                # route through appropriate proxy
-                if '.m3u8' in stripped:
-                    line = f"/proxy_m3u8?url={quote(absolute_url, safe='')}&referer={quote(referer, safe='')}"
-                else:
-                    line = f"/proxy_segment?url={quote(absolute_url, safe='')}&referer={quote(referer, safe='')}"
-            lines.append(line)
-        
-        return Response(content='\n'.join(lines), media_type="application/vnd.apple.mpegurl")
-
-@app.get("/proxy_segment")
-async def proxy_segment(url: str, referer: str):
-    # proxy video segments with proper headers
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        h = HEADERS.copy()
-        h["Referer"] = referer
-        resp = await client.get(url, headers=h)
-        return Response(content=resp.content, media_type="video/mp2t")
 
 @app.get("/", response_class=HTMLResponse)
 async def home():
